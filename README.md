@@ -14,18 +14,18 @@ Google Calendar UI (work + personal + shared, etc.), not just `primary`.
 │ ──────────────────────────── │
 │ all-day: OOO – Jamie         │
 │                              │
-│   09:00 – 09:30              │
-│   standup                    │
-│                              │
-│ ▌ 10:30 – 11:30   ◀ NOW      │
-│ ▌ Design review              │
-│ ▌ Zoom                       │
-│                              │
-│   12:00 – 13:00              │
-│   lunch w/ Sam               │
-│   Tartine                    │
+│   09:00–09:30  standup       │
+│ ▌ 10:30–11:30  Design  ◀ NOW │
+│ ▌              Zoom          │
+│   12:00–13:00  lunch w/ Sam  │
+│                Tartine       │
+│   14:00–15:00  1:1 w/ Pat    │
 └──────────────────────────────┘
 ```
+
+Each event is one line ("HH:MM–HH:MM title"); location, when present,
+drops to a second indented line. A busy 14-event day fits in ~17 rows
+so the column stays usable even when pinned to a short pane.
 
 ## Design
 

@@ -32,15 +32,21 @@ func formatHeader(day time.Time) string {
 	return day.Format("Mon · Jan 2")
 }
 
-// formatBlockLine renders one block as one or more lines of plain text. No
-// ANSI escapes are emitted; styling is applied by renderView around this
-// text. Width is enforced exactly.
+// formatBlockLine renders one block as a compact single-line entry
+// "<marker><HH:MM–HH:MM>  <title>" plus an indented second line for
+// location when present. The current block right-aligns the NOW suffix
+// against the right edge so it lines up across the column.
 //
 // Contract:
 //
 //	Preconditions: width >= 8.
-//	Postconditions: every line's visual width is <= width and lines start
-//	with either currentMarker (StatusCurrent) or idleMarker (otherwise).
+//	Postconditions:
+//	  - every emitted line's visual width is <= width.
+//	  - every line starts with currentMarker (StatusCurrent) or
+//	    idleMarker (otherwise).
+//	  - the " ◀ NOW" suffix only appears when status == StatusCurrent
+//	    (and only when width is wide enough to fit it without erasing
+//	    the title; under heavy truncation it may be dropped).
 func formatBlockLine(b schedule.Block, width int) string {
 	if width < 8 {
 		panic("ui.formatBlockLine: width must be >= 8")
@@ -53,17 +59,42 @@ func formatBlockLine(b schedule.Block, width int) string {
 		suffix = nowSuffix
 	}
 
-	timeText := fmt.Sprintf("%s – %s",
+	timeText := fmt.Sprintf("%s–%s",
 		b.Event.Start.Format("15:04"),
 		b.Event.End.Format("15:04"),
 	)
-	timeLine := truncateToWidth(prefix+timeText+suffix, width)
+	const gap = "  "
+	prefixLen := utf8Width(prefix)
+	timeLen := utf8Width(timeText)
+	gapLen := utf8Width(gap)
+	suffixLen := utf8Width(suffix)
 
-	titleLine := truncateToWidth(prefix+b.Event.Title, width)
+	titleBudget := width - prefixLen - timeLen - gapLen - suffixLen
+	if titleBudget < 1 {
+		// Width is too tight to fit the NOW suffix; drop it and retry.
+		suffix = ""
+		suffixLen = 0
+		titleBudget = width - prefixLen - timeLen - gapLen
+		if titleBudget < 1 {
+			titleBudget = 1
+		}
+	}
 
-	lines := []string{timeLine, titleLine}
+	title := truncateToWidth(b.Event.Title, titleBudget)
+	if b.Status == schedule.StatusCurrent && suffix != "" {
+		// Pad the title column so the suffix right-aligns at the
+		// rightmost cell, keeping NOW markers in a tidy column when
+		// stacked across events.
+		title += strings.Repeat(" ", titleBudget-utf8Width(title))
+	}
+	line := truncateToWidth(prefix+timeText+gap+title+suffix, width)
+
+	lines := []string{line}
 	if b.Event.Location != "" {
-		lines = append(lines, truncateToWidth(prefix+b.Event.Location, width))
+		// Indent location under the title column, keeping the marker
+		// prefix so current-event continuity reads vertically.
+		locIndent := strings.Repeat(" ", timeLen+gapLen)
+		lines = append(lines, truncateToWidth(prefix+locIndent+b.Event.Location, width))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -119,10 +150,7 @@ func renderView(state viewState) string {
 	}
 
 	b.WriteString("\n")
-	for i, blk := range state.schedule.Blocks {
-		if i > 0 {
-			b.WriteString("\n")
-		}
+	for _, blk := range state.schedule.Blocks {
 		b.WriteString(formatBlockLine(blk, state.width))
 		b.WriteString("\n")
 	}
