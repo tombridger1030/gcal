@@ -1,0 +1,12 @@
+# Binaries
+/gcal
+/cmd/gcal/gcal
+*.exe
+
+# Real OAuth credentials (only the placeholder is committed)
+/internal/auth/credentials.local.json
+
+# Local test artifacts
+*.out
+*.test
+.DS_Store
