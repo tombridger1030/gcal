@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -63,10 +64,11 @@ func New(ctx context.Context, store auth.TokenStore) (*Client, error) {
 	return &Client{svc: svc, store: store}, nil
 }
 
-// FetchDay returns every event from the user's primary calendar that
-// overlaps the local day containing day. Recurring events are expanded
-// server-side; cancelled events and self-declined invites are dropped;
-// all times are normalized to time.Local before return.
+// FetchDay returns every event that overlaps the local day containing day,
+// merged across every calendar the user has marked Selected in their Google
+// Calendar UI (i.e. the calendars visible in the official client). Recurring
+// events are expanded server-side; cancelled events and self-declined invites
+// are dropped; all times are normalized to time.Local before return.
 //
 // Contract:
 //
@@ -77,12 +79,15 @@ func New(ctx context.Context, store auth.TokenStore) (*Client, error) {
 //	Postconditions on nil error:
 //	  - Every returned event has Start and End in time.Local.
 //	  - Every returned event overlaps [localMidnight(day), localMidnight(day)+24h).
+//	  - Events are sorted by Start ascending.
 //	  - The slice is owned by the caller and may be mutated freely.
+//	  - Pagination is fully consumed for every queried calendar.
 //
 //	Errors:
 //	  - Returns ErrTokenRevoked when Google rejects the credentials
 //	    (HTTP 401/403 from the API or a 4xx from the token endpoint).
-//	  - Returns wrapped network errors otherwise.
+//	  - Returns the first wrapped network error encountered across the
+//	    parallel per-calendar fetches; remaining fetches are cancelled.
 func (c *Client) FetchDay(ctx context.Context, day time.Time) ([]schedule.Event, error) {
 	if day.IsZero() {
 		panic("calendar.Client.FetchDay: day is zero")
@@ -91,29 +96,130 @@ func (c *Client) FetchDay(ctx context.Context, day time.Time) ([]schedule.Event,
 	dayStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
 	dayEnd := time.Date(day.Year(), day.Month(), day.Day()+1, 0, 0, 0, 0, day.Location())
 
-	call := c.svc.Events.List("primary").
-		TimeMin(dayStart.Format(time.RFC3339)).
-		TimeMax(dayEnd.Format(time.RFC3339)).
-		SingleEvents(true).
-		OrderBy("startTime").
-		MaxResults(2500).
-		ShowDeleted(false).
-		Context(ctx)
-
-	resp, err := call.Do()
+	calIDs, err := c.selectedCalendarIDs(ctx)
 	if err != nil {
-		return nil, classifyAPIError(err)
+		return nil, err
 	}
 
-	out := make([]schedule.Event, 0, len(resp.Items))
-	for _, item := range resp.Items {
-		ev, ok := translate(item)
-		if !ok {
+	type fetchResult struct {
+		events []schedule.Event
+		err    error
+	}
+	results := make(chan fetchResult, len(calIDs))
+
+	fetchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	for _, id := range calIDs {
+		go func(id string) {
+			evs, err := c.fetchDayForCalendar(fetchCtx, id, dayStart, dayEnd)
+			results <- fetchResult{events: evs, err: err}
+		}(id)
+	}
+
+	var (
+		out      []schedule.Event
+		firstErr error
+	)
+	for range calIDs {
+		r := <-results
+		if r.err != nil {
+			if firstErr == nil {
+				firstErr = r.err
+				cancel() // signal remaining goroutines to abort early
+			}
 			continue
 		}
-		out = append(out, ev)
+		out = append(out, r.events...)
 	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].Start.Before(out[j].Start)
+	})
 	return out, nil
+}
+
+// selectedCalendarIDs returns the IDs of every calendar the user has marked
+// visible in their Google Calendar UI. The primary calendar is always
+// included even if the API ever fails to flag it.
+func (c *Client) selectedCalendarIDs(ctx context.Context) ([]string, error) {
+	var ids []string
+	pageToken := ""
+	sawPrimary := false
+	for {
+		call := c.svc.CalendarList.List().
+			MinAccessRole("reader").
+			ShowHidden(false).
+			Context(ctx)
+		if pageToken != "" {
+			call = call.PageToken(pageToken)
+		}
+		resp, err := call.Do()
+		if err != nil {
+			return nil, classifyAPIError(err)
+		}
+		for _, item := range resp.Items {
+			if !item.Selected {
+				continue
+			}
+			ids = append(ids, item.Id)
+			if item.Primary {
+				sawPrimary = true
+			}
+		}
+		if resp.NextPageToken == "" {
+			break
+		}
+		pageToken = resp.NextPageToken
+	}
+	if !sawPrimary {
+		ids = append(ids, "primary")
+	}
+	return ids, nil
+}
+
+// fetchDayForCalendar fetches all events for one calendar across the given
+// half-open [dayStart, dayEnd) window, consuming pagination fully.
+func (c *Client) fetchDayForCalendar(ctx context.Context, calID string, dayStart, dayEnd time.Time) ([]schedule.Event, error) {
+	var out []schedule.Event
+	pageToken := ""
+	for {
+		call := c.svc.Events.List(calID).
+			TimeMin(dayStart.Format(time.RFC3339)).
+			TimeMax(dayEnd.Format(time.RFC3339)).
+			SingleEvents(true).
+			OrderBy("startTime").
+			MaxResults(2500).
+			ShowDeleted(false).
+			Context(ctx)
+		if pageToken != "" {
+			call = call.PageToken(pageToken)
+		}
+
+		resp, err := call.Do()
+		if err != nil {
+			return nil, classifyAPIError(err)
+		}
+
+		if out == nil {
+			out = make([]schedule.Event, 0, len(resp.Items))
+		}
+		for _, item := range resp.Items {
+			ev, ok := translate(item)
+			if !ok {
+				continue
+			}
+			out = append(out, ev)
+		}
+
+		if resp.NextPageToken == "" {
+			return out, nil
+		}
+		pageToken = resp.NextPageToken
+	}
 }
 
 // classifyAPIError converts Google's typed errors into the package's
