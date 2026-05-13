@@ -84,18 +84,25 @@ desktop apps; takes about ten minutes once).
 4. Create OAuth credentials:
    APIs & Services → Credentials → Create Credentials → OAuth client ID →
    Application type **Desktop app** → Create. Download the JSON.
-5. Drop the downloaded JSON at one of these locations:
-   - **Installed via brew (or any prebuilt binary):**
-     `~/Library/Application Support/gcal/credentials.json`
-   - **Building from source:** replace `internal/auth/credentials.json` in
-     this repo with the downloaded file (overwrite the placeholder), then
-     `go build -o gcal ./cmd/gcal`.
+5. Hand the values to gcal. Pick whichever flow you prefer:
 
-   gcal checks the disk path first and falls back to the embedded file, so
-   either flow works.
+   **Easy path — let gcal prompt you (works with brew and any prebuilt
+   binary).** Just run `gcal`. On first launch it prompts for your client
+   ID, client secret, and an optional project ID, builds the
+   `credentials.json` for you, and writes it to
+   `~/Library/Application Support/gcal/credentials.json` (mode 0600).
 
-6. Run `gcal`. The first invocation opens your browser for consent. After
-   approval the refresh token is saved at
+   **Manual path — drop the downloaded JSON yourself.** Save Google's
+   downloaded file directly to
+   `~/Library/Application Support/gcal/credentials.json`.
+
+   **Source build — embed at compile time.** Replace
+   `internal/auth/credentials.json` in this repo with the downloaded file,
+   then `go build -o gcal ./cmd/gcal`. The on-disk path still wins if you
+   ever drop a file there later.
+
+6. Continue. After credentials are in place, gcal opens your browser for
+   consent. The refresh token is saved at
    `~/Library/Application Support/gcal/token.json` (mode 0600). Subsequent
    runs skip straight to the TUI.
 
