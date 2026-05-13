@@ -73,24 +73,33 @@ func RunFirstTimeFlow(ctx context.Context, store TokenStore) error {
 		err   error
 	}
 	done := make(chan result, 1)
+	// send delivers a result to done only if done is empty, so a duplicate
+	// /callback (browser retry, prefetch) cannot wedge the handler goroutine
+	// against a full buffer and stall server.Shutdown.
+	send := func(r result) {
+		select {
+		case done <- r:
+		default:
+		}
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if got := q.Get("state"); got != state {
 			http.Error(w, "state mismatch", http.StatusBadRequest)
-			done <- result{err: errors.New("oauth state mismatch")}
+			send(result{err: errors.New("oauth state mismatch")})
 			return
 		}
 		if oauthErr := q.Get("error"); oauthErr != "" {
 			http.Error(w, oauthErr, http.StatusBadRequest)
-			done <- result{err: fmt.Errorf("oauth error: %s", oauthErr)}
+			send(result{err: fmt.Errorf("oauth error: %s", oauthErr)})
 			return
 		}
 		code := q.Get("code")
 		if code == "" {
 			http.Error(w, "missing code", http.StatusBadRequest)
-			done <- result{err: errors.New("oauth callback missing code")}
+			send(result{err: errors.New("oauth callback missing code")})
 			return
 		}
 		token, err := cfg.Exchange(r.Context(), code,
@@ -98,12 +107,12 @@ func RunFirstTimeFlow(ctx context.Context, store TokenStore) error {
 		)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
-			done <- result{err: fmt.Errorf("exchange code: %w", err)}
+			send(result{err: fmt.Errorf("exchange code: %w", err)})
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = io.WriteString(w, successHTML)
-		done <- result{token: token}
+		send(result{token: token})
 	})
 
 	server := &http.Server{Handler: mux}
