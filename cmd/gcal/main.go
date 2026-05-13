@@ -63,8 +63,15 @@ func run(args []string) error {
 		}
 		return err
 	case *login:
+		if err := auth.EnsureCredentials(os.Stdin, os.Stderr); err != nil {
+			return err
+		}
 		fmt.Fprintln(os.Stderr, "gcal: launching OAuth consent flow...")
 		return auth.RunFirstTimeFlow(ctx, store)
+	}
+
+	if err := auth.EnsureCredentials(os.Stdin, os.Stderr); err != nil {
+		return err
 	}
 
 	client, err := calendar.New(ctx, store)
