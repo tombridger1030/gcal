@@ -35,7 +35,27 @@ snapshot:
   version_template: "{{ incpatch .Version }}-next"
 
 changelog:
-  use: github-native
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^Merge pull request"
+      - "^Merge branch"
+  groups:
+    - title: Features
+      regexp: '(?i)^(feat|add|implement|prompt|merge events)'
+      order: 0
+    - title: Fixes
+      regexp: '(?i)^(fix|paginate|drain)'
+      order: 1
+    - title: Build / Release
+      regexp: '(?i)^(bump|build|setup|configure|add goreleaser)'
+      order: 2
+    - title: Docs
+      regexp: '(?i)^(docs|update readme|readme)'
+      order: 3
+    - title: Other
+      order: 999
 
 release:
   draft: false
