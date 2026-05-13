@@ -32,13 +32,13 @@ Google Calendar UI (work + personal + shared, etc.), not just `primary`.
 Five small Go packages, each a "deep module" (Ousterhout): narrow public
 interface, substantial hidden implementation.
 
-| Package             | Public surface                   | Hides                                                            |
-| ------------------- | -------------------------------- | ---------------------------------------------------------------- |
-| `internal/schedule` | `BuildState`, `NextTransition`   | sort, clamp, classify, midnight math, DST                        |
-| `internal/calendar` | `New`, `FetchDay`                | Google SDK, RFC3339, recurring expansion, declined-invite filter |
-| `internal/auth`     | `TokenStore`, `RunFirstTimeFlow` | OAuth loopback server, PKCE, atomic 0600 writes                  |
-| `internal/ui`       | `Run`                            | Bubble Tea model, transition timer, render layout                |
-| `cmd/gcal`          | `main`                           | flag parsing, wiring                                             |
+| Package             | Public surface                                        | Hides                                                                                                                            |
+| ------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `internal/schedule` | `BuildState`, `NextTransition`                        | sort, clamp, classify, midnight math, DST                                                                                        |
+| `internal/calendar` | `New`, `FetchDay`                                     | Google SDK, RFC3339, recurring expansion, declined-invite filter, multi-calendar merge across `CalendarList`, pagination drain   |
+| `internal/auth`     | `TokenStore`, `RunFirstTimeFlow`, `EnsureCredentials` | OAuth loopback server, PKCE, atomic 0600 writes, interactive first-run credentials prompt, disk-then-embedded credentials lookup |
+| `internal/ui`       | `Run`                                                 | Bubble Tea model, transition timer, render layout                                                                                |
+| `cmd/gcal`          | `main`                                                | flag parsing, wiring                                                                                                             |
 
 Function preconditions and postconditions are documented as Design-by-Contract
 blocks in each package's godoc and enforced with panics (internal callers) or
@@ -55,7 +55,9 @@ typed errors (boundary).
 - **No `bubbles/*` sub-components.** Manual rendering with plain text plus a few
   unicode characters; no styling library overhead.
 - **Read-only.** No event creation, no edit, no notifications, no themes, no
-  config file. The single state file is the OAuth refresh token.
+  user-settings file. The only on-disk state is the OAuth client
+  credentials and refresh token, both written mode 0600 under
+  `~/Library/Application Support/gcal/`.
 
 Idle target: <30MB RSS, ~0% CPU.
 
@@ -66,7 +68,12 @@ brew tap tombridger1030/tap
 brew install --cask gcal
 ```
 
-(Once a release is tagged. Until then, build from source — see below.)
+Latest released version: see the
+[Releases page](https://github.com/tombridger1030/gcal/releases). The cask
+strips the macOS quarantine attribute on install so the unsigned binary
+runs without a Gatekeeper prompt.
+
+Prefer to build from source? See the **Development** section below.
 
 ## First-run setup
 
@@ -111,7 +118,7 @@ desktop apps; takes about ten minutes once).
 ```
 gcal              # launch the TUI
 gcal --login      # re-run the OAuth consent flow (e.g. after revoke)
-gcal --logout     # delete the local token
+gcal --logout     # delete the local token (no-op if not logged in)
 gcal --version    # print version and exit
 ```
 
@@ -134,10 +141,11 @@ go vet ./...
 go build ./cmd/gcal
 ```
 
-Tests cover ~50 cases across pure helpers (schedule, render, timer math),
-file storage, translation, and the Bubble Tea state machine. The OAuth
-loopback flow and the actual Google API call are exercised by the binary at
-runtime, not by unit tests.
+Tests cover ~75 cases across pure helpers (schedule, render, timer math),
+file storage, translation, the Bubble Tea state machine, and the
+interactive credentials prompt (driven via `strings.Reader` against a
+pinned `t.TempDir`). The OAuth loopback flow and the actual Google API
+call are exercised by the binary at runtime, not by unit tests.
 
 ## Releasing
 
@@ -154,8 +162,8 @@ Tagged pushes (`vX.Y.Z`) trigger
 To cut a release:
 
 ```
-git tag v0.1.0
-git push origin v0.1.0
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
 Snapshot the release locally without publishing:
