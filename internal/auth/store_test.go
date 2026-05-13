@@ -108,10 +108,72 @@ func TestFileStoreLoadNeverReturnsNilNil(t *testing.T) {
 }
 
 func TestConfigRejectsPlaceholderCredentials(t *testing.T) {
-	// The committed credentials.json is a placeholder; Config must refuse
-	// to return it so callers get a clear error rather than a confusing
-	// 401 from Google later.
+	// The committed credentials.json is a placeholder; with no disk override
+	// Config must refuse to return it so callers get a clear error rather
+	// than a confusing 401 from Google later.
+	withCredentialsPath(t, filepath.Join(t.TempDir(), "missing.json"))
 	if _, err := Config(); !errors.Is(err, ErrPlaceholderCredentials) {
 		t.Errorf("Config(): got %v, want ErrPlaceholderCredentials", err)
 	}
+}
+
+func TestConfigLoadsDiskCredentialsWhenPresent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.json")
+	const realJSON = `{
+		"installed": {
+			"client_id": "real-client-id.apps.googleusercontent.com",
+			"project_id": "real-project",
+			"auth_uri": "https://accounts.google.com/o/oauth2/auth",
+			"token_uri": "https://oauth2.googleapis.com/token",
+			"client_secret": "real-secret",
+			"redirect_uris": ["http://localhost"]
+		}
+	}`
+	if err := os.WriteFile(path, []byte(realJSON), 0o600); err != nil {
+		t.Fatalf("write creds: %v", err)
+	}
+	withCredentialsPath(t, path)
+
+	cfg, err := Config()
+	if err != nil {
+		t.Fatalf("Config: %v", err)
+	}
+	if cfg.ClientID != "real-client-id.apps.googleusercontent.com" {
+		t.Errorf("ClientID: got %q, want disk client id", cfg.ClientID)
+	}
+}
+
+func TestConfigRejectsDiskPlaceholder(t *testing.T) {
+	// A disk credentials.json that still contains REPLACE_ME must produce
+	// a clear error rather than silently falling through to the embedded
+	// placeholder.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.json")
+	const placeholderJSON = `{
+		"installed": {
+			"client_id": "REPLACE_ME.apps.googleusercontent.com",
+			"client_secret": "REPLACE_ME",
+			"auth_uri": "https://accounts.google.com/o/oauth2/auth",
+			"token_uri": "https://oauth2.googleapis.com/token",
+			"redirect_uris": ["http://localhost"]
+		}
+	}`
+	if err := os.WriteFile(path, []byte(placeholderJSON), 0o600); err != nil {
+		t.Fatalf("write creds: %v", err)
+	}
+	withCredentialsPath(t, path)
+
+	if _, err := Config(); err == nil {
+		t.Error("Config() with disk placeholder: got nil error, want placeholder rejection")
+	}
+}
+
+// withCredentialsPath pins credentialsPath to p for the duration of the test
+// and restores the original on cleanup.
+func withCredentialsPath(t *testing.T, p string) {
+	t.Helper()
+	orig := credentialsPath
+	credentialsPath = func() (string, error) { return p, nil }
+	t.Cleanup(func() { credentialsPath = orig })
 }

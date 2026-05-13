@@ -18,6 +18,14 @@ import (
 	"github.com/tombridger1030/gcal/internal/ui"
 )
 
+// version, commit, and date are stamped at link time by goreleaser via
+// -ldflags. Left as defaults for go build / go run.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "gcal:", err)
@@ -29,8 +37,14 @@ func run(args []string) error {
 	fs := flag.NewFlagSet("gcal", flag.ExitOnError)
 	login := fs.Bool("login", false, "run the OAuth consent flow and save a token")
 	logout := fs.Bool("logout", false, "delete the saved token")
+	showVersion := fs.Bool("version", false, "print version and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	if *showVersion {
+		fmt.Printf("gcal %s (%s, built %s)\n", version, commit, date)
+		return nil
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -43,7 +57,11 @@ func run(args []string) error {
 
 	switch {
 	case *logout:
-		return os.Remove(store.Path())
+		err := os.Remove(store.Path())
+		if errors.Is(err, os.ErrNotExist) {
+			return nil // already logged out — not an error
+		}
+		return err
 	case *login:
 		fmt.Fprintln(os.Stderr, "gcal: launching OAuth consent flow...")
 		return auth.RunFirstTimeFlow(ctx, store)
