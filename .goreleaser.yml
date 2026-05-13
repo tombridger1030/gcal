@@ -1,0 +1,67 @@
+version: 2
+project_name: gcal
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: gcal
+    main: ./cmd/gcal
+    binary: gcal
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+    goarch:
+      - arm64
+      - amd64
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .ShortCommit }}
+      - -X main.date={{ .Date }}
+
+archives:
+  - id: gcal
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: github-native
+
+release:
+  draft: false
+  prerelease: auto
+
+homebrew_casks:
+  - name: gcal
+    binaries:
+      - gcal
+    repository:
+      owner: tombridger1030
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Casks
+    homepage: https://github.com/tombridger1030/gcal
+    description: A tiny terminal Google Calendar pane for the side of your Mac screen.
+    # Unsigned binary — strip the quarantine xattr so Gatekeeper doesn't block
+    # the first run. Replace with proper code signing if/when we get a cert.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/gcal"]
+          end
+    caveats: |
+      Drop your Google Cloud OAuth Desktop client JSON at:
+        ~/Library/Application Support/gcal/credentials.json
+      then run `gcal --login`.
+      See https://github.com/tombridger1030/gcal#first-run-setup
