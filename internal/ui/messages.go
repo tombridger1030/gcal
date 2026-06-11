@@ -27,3 +27,17 @@ type fetchErrMsg struct {
 type transitionMsg struct {
 	at time.Time
 }
+
+// focusTickMsg fires when the focus prompt timer wakes.
+type focusTickMsg struct {
+	at  time.Time
+	gen int
+}
+
+// focusLoggedMsg confirms a focus entry was appended.
+type focusLoggedMsg struct{}
+
+// focusErrMsg reports a failed focus journal write.
+type focusErrMsg struct {
+	err error
+}

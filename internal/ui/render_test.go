@@ -219,6 +219,29 @@ func TestRenderViewStaleIndicator(t *testing.T) {
 	}
 }
 
+func TestRenderViewFocusError(t *testing.T) {
+	state := schedule.BuildState(nil, at(10, 0))
+	out := renderView(viewState{schedule: state, width: 32, height: 12, focusErr: true})
+	if !strings.Contains(out, "focus log failed") {
+		t.Errorf("focus error missing:\n%s", out)
+	}
+}
+
+func TestRenderFocusPromptShowsHourAndRespectsWidth(t *testing.T) {
+	const width = 24
+	out := renderFocusPrompt(width, 12, at(14, 0))
+	for _, line := range strings.Split(out, "\n") {
+		if utf8Width(line) > width {
+			t.Errorf("line exceeds width %d: %q", width, line)
+		}
+	}
+	for _, want := range []string{"How focused?", "14:00-15:00", "1  distracted", "5  deep focus"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("prompt missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestRenderViewTokenRevoked(t *testing.T) {
 	out := renderView(viewState{
 		schedule: schedule.BuildState(nil, at(10, 0)),

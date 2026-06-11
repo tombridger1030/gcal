@@ -3,12 +3,14 @@ package ui
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/tombridger1030/gcal/internal/calendar"
+	"github.com/tombridger1030/gcal/internal/focus"
 	"github.com/tombridger1030/gcal/internal/schedule"
 )
 
@@ -183,6 +185,182 @@ func TestModelUpdateWindowSize(t *testing.T) {
 	}
 }
 
+func TestModelFocusTickStartsPromptAtTarget(t *testing.T) {
+	now := time.Date(2026, 5, 13, 10, 0, 0, 0, time.Local)
+	m, _, _ := newFocusTestModel(now)
+	m.nextFocusAt = now
+	m.focusInterval = time.Nanosecond
+
+	updated, cmd := m.update(focusTickMsg{at: now, gen: m.focusGen})
+	mm := updated.(model)
+
+	if !mm.prompting {
+		t.Fatal("expected focus prompt to be active")
+	}
+	if !mm.promptTarget.Equal(now) {
+		t.Errorf("promptTarget=%v, want %v", mm.promptTarget, now)
+	}
+	if cmd == nil {
+		t.Fatal("expected notify/schedule command")
+	}
+	if out := mm.View(); !strings.Contains(out, "How focused?") || !strings.Contains(out, "09:00-10:00") {
+		t.Errorf("prompt view missing expected text:\n%s", out)
+	}
+}
+
+func TestModelFocusTickSkipsMissedPromptAfterWake(t *testing.T) {
+	target := time.Date(2026, 5, 13, 10, 0, 0, 0, time.Local)
+	wokeAt := target.Add(2 * wakeThreshold)
+	m, _, _ := newFocusTestModel(wokeAt)
+	m.nextFocusAt = target
+	m.focusInterval = time.Nanosecond
+
+	updated, _ := m.update(focusTickMsg{at: wokeAt, gen: m.focusGen})
+	mm := updated.(model)
+
+	if mm.prompting {
+		t.Fatal("missed focus hour should be skipped, not prompted")
+	}
+}
+
+func TestModelFocusRatingRecordsEntryAndClearsPrompt(t *testing.T) {
+	now := time.Date(2026, 5, 13, 10, 2, 0, 0, time.Local)
+	target := time.Date(2026, 5, 13, 10, 0, 0, 0, time.Local)
+	m, recorder, _ := newFocusTestModel(now)
+	m.prompting = true
+	m.promptTarget = target
+	m.focusInterval = time.Nanosecond
+
+	updated, cmd := m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}})
+	mm := updated.(model)
+	if mm.prompting {
+		t.Fatal("prompt should clear after rating")
+	}
+	runBatch(cmd)
+	if len(recorder.entries) != 1 {
+		t.Fatalf("recorded entries=%d, want 1", len(recorder.entries))
+	}
+	got := recorder.entries[0]
+	if got.Rating != 3 {
+		t.Errorf("rating=%d, want 3", got.Rating)
+	}
+	wantHour := time.Date(2026, 5, 13, 9, 0, 0, 0, time.Local)
+	if !got.HourStart.Equal(wantHour) {
+		t.Errorf("hourStart=%v, want %v", got.HourStart, wantHour)
+	}
+	if !got.LoggedAt.Equal(now) {
+		t.Errorf("loggedAt=%v, want %v", got.LoggedAt, now)
+	}
+}
+
+func TestModelFocusTickDropsStaleGenerationWithoutRearming(t *testing.T) {
+	now := time.Date(2026, 5, 13, 10, 0, 0, 0, time.Local)
+	m, _, _ := newFocusTestModel(now)
+	m.nextFocusAt = now
+	m.focusGen = 2
+
+	updated, cmd := m.update(focusTickMsg{at: now, gen: 1})
+	mm := updated.(model)
+
+	if mm.prompting {
+		t.Fatal("stale focus timer should not prompt")
+	}
+	if cmd != nil {
+		t.Fatal("stale focus timer should not re-arm")
+	}
+}
+
+func TestScheduleFocusPromptStampsGeneration(t *testing.T) {
+	now := time.Date(2026, 5, 13, 10, 0, 0, 0, time.Local)
+	m, _, _ := newFocusTestModel(now)
+	m.nextFocusAt = now
+	m.focusGen = 7
+
+	msg := m.scheduleFocusPrompt()()
+	tick, ok := msg.(focusTickMsg)
+	if !ok {
+		t.Fatalf("message type=%T, want focusTickMsg", msg)
+	}
+	if tick.gen != 7 {
+		t.Errorf("generation=%d, want 7", tick.gen)
+	}
+}
+
+func TestModelFocusSkipDoesNotRecord(t *testing.T) {
+	now := time.Date(2026, 5, 13, 10, 2, 0, 0, time.Local)
+	m, recorder, _ := newFocusTestModel(now)
+	m.prompting = true
+	m.promptTarget = time.Date(2026, 5, 13, 10, 0, 0, 0, time.Local)
+	m.focusInterval = time.Nanosecond
+
+	updated, _ := m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	mm := updated.(model)
+	if mm.prompting {
+		t.Fatal("prompt should clear after skip")
+	}
+	if len(recorder.entries) != 0 {
+		t.Fatalf("recorded entries=%d, want 0", len(recorder.entries))
+	}
+}
+
+func TestModelFocusTickRetargetsOpenPromptToLatestWorkHour(t *testing.T) {
+	now := time.Date(2026, 5, 13, 11, 0, 0, 0, time.Local)
+	m, _, _ := newFocusTestModel(now)
+	oldTarget := time.Date(2026, 5, 13, 10, 0, 0, 0, time.Local)
+	m.prompting = true
+	m.promptTarget = oldTarget
+	m.nextFocusAt = now
+
+	updated, cmd := m.update(focusTickMsg{at: now, gen: m.focusGen})
+	mm := updated.(model)
+
+	if !mm.prompting {
+		t.Fatal("prompt should remain open")
+	}
+	if !mm.promptTarget.Equal(now) {
+		t.Errorf("promptTarget=%v, want latest target %v", mm.promptTarget, now)
+	}
+	if cmd == nil {
+		t.Fatal("expected notification/reschedule command")
+	}
+}
+
+func TestFocusIntervalRequiresWorkBlock(t *testing.T) {
+	outside := time.Date(2026, 5, 13, 20, 0, 0, 0, time.Local)
+	m, _, _ := newFocusTestModel(outside)
+	m.focusInterval = time.Minute
+
+	if got, ok := m.nextFocusPromptAt(outside); ok {
+		t.Errorf("nextFocusPromptAt outside work block=%v, true; want false", got)
+	}
+
+	inside := time.Date(2026, 5, 13, 10, 30, 0, 0, time.Local)
+	m.now = func() time.Time { return inside }
+	m.recomputeState()
+	got, ok := m.nextFocusPromptAt(inside)
+	if !ok {
+		t.Fatal("nextFocusPromptAt inside work block ok=false, want true")
+	}
+	want := inside.Add(time.Minute)
+	if !got.Equal(want) {
+		t.Errorf("nextFocusPromptAt inside work block=%v, want %v", got, want)
+	}
+}
+
+func TestNotifyCmdIsBestEffort(t *testing.T) {
+	now := time.Date(2026, 5, 13, 10, 0, 0, 0, time.Local)
+	m, _, notifier := newFocusTestModel(now)
+	notifier.err = errors.New("osascript failed")
+
+	msg := m.notifyCmd("title", "body")()
+	if msg != nil {
+		t.Errorf("notifyCmd msg=%#v, want nil", msg)
+	}
+	if len(notifier.sent) != 1 {
+		t.Fatalf("sent notifications=%d, want 1", len(notifier.sent))
+	}
+}
+
 // fetcherFn lets us drive the model from tests without a real Google client.
 type fetcherFn func(ctx context.Context, day time.Time) ([]schedule.Event, error)
 
@@ -196,4 +374,64 @@ var _ = func() bool {
 	var m model
 	_, _ = m.update(nil)
 	return true
+}
+
+type recordingFocusRecorder struct {
+	entries []focus.Entry
+	err     error
+}
+
+func (r *recordingFocusRecorder) Append(entry focus.Entry) error {
+	if r.err != nil {
+		return r.err
+	}
+	r.entries = append(r.entries, entry)
+	return nil
+}
+
+type recordingNotifier struct {
+	sent []string
+	err  error
+}
+
+func (n *recordingNotifier) Send(title, body string) error {
+	n.sent = append(n.sent, title+"|"+body)
+	return n.err
+}
+
+func newFocusTestModel(now time.Time) (model, *recordingFocusRecorder, *recordingNotifier) {
+	recorder := &recordingFocusRecorder{}
+	notifier := &recordingNotifier{}
+	events := []schedule.Event{
+		{
+			ID:    "work",
+			Title: "Work",
+			Start: time.Date(2026, 5, 13, 9, 0, 0, 0, time.Local),
+			End:   time.Date(2026, 5, 13, 18, 0, 0, 0, time.Local),
+		},
+	}
+	m := newTestModel(now, events)
+	m.focusEnabled = true
+	m.focusRecorder = recorder
+	m.focusNotifier = notifier
+	m.focusGen = 1
+	m.setNextFocusPromptAt(now)
+	return m, recorder, notifier
+}
+
+func runBatch(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		msgs := make([]tea.Msg, 0, len(batch))
+		for _, batched := range batch {
+			if batched != nil {
+				msgs = append(msgs, batched())
+			}
+		}
+		return msgs
+	}
+	return []tea.Msg{msg}
 }

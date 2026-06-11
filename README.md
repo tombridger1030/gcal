@@ -3,7 +3,9 @@
 A tiny terminal calendar that pins to the side of your Mac screen and shows
 today's Google Calendar as a column of time-blocks. The "current" indicator
 auto-advances at every event boundary; the day rolls over at local midnight.
-No clock display, no daemon, no polling — pure event-driven rendering.
+At each top-of-hour where the prior hour overlaps a calendar block whose
+title contains `work`, gcal asks for a 1-5 focus rating and appends it to a
+private local journal.
 
 Events are merged from every calendar you have marked **visible** in the
 Google Calendar UI (work + personal + shared, etc.), not just `primary`.
@@ -29,7 +31,7 @@ so the column stays usable even when pinned to a short pane.
 
 ## Design
 
-Five small Go packages, each a "deep module" (Ousterhout): narrow public
+Seven small Go packages, each a "deep module" (Ousterhout): narrow public
 interface, substantial hidden implementation.
 
 | Package             | Public surface                                        | Hides                                                                                                                            |
@@ -37,7 +39,9 @@ interface, substantial hidden implementation.
 | `internal/schedule` | `BuildState`, `NextTransition`                        | sort, clamp, classify, midnight math, DST                                                                                        |
 | `internal/calendar` | `New`, `FetchDay`                                     | Google SDK, RFC3339, recurring expansion, declined-invite filter, multi-calendar merge across `CalendarList`, pagination drain   |
 | `internal/auth`     | `TokenStore`, `RunFirstTimeFlow`, `EnsureCredentials` | OAuth loopback server, PKCE, atomic 0600 writes, interactive first-run credentials prompt, disk-then-embedded credentials lookup |
-| `internal/ui`       | `Run`                                                 | Bubble Tea model, transition timer, render layout                                                                                |
+| `internal/focus`    | `Entry`, `NextPromptAt`, `DefaultJournal`             | work-block prompt math, append-only JSONL journal, 0600 writes                                                                   |
+| `internal/notify`   | `Notifier`, `Osascript`                               | macOS notification scripting and AppleScript escaping                                                                            |
+| `internal/ui`       | `Run`                                                 | Bubble Tea model, transition/focus timers, render layout                                                                         |
 | `cmd/gcal`          | `main`                                                | flag parsing, wiring                                                                                                             |
 
 Function preconditions and postconditions are documented as Design-by-Contract
@@ -46,18 +50,19 @@ typed errors (boundary).
 
 ## Lightweight by design
 
-- **No periodic tick.** A single `time.Timer` is set to fire at the next event
-  boundary. Total wakeups per day ≈ 2 × events + midnight + a few refreshes.
+- **No periodic tick.** Capped `time.Timer`s are set for the next event
+  boundary and the next focus prompt. Wakeups are tied to real state changes,
+  not a constant polling loop.
 - **5-minute timer cap.** macOS pauses the monotonic clock during sleep. Capping
   bounds wake-time skew; an extra check fires a refresh on detected wake.
 - **No background polling.** Refresh on startup, midnight rollover, `r` keypress,
-  and wake detection. Nothing else.
+  wake detection, and capped focus-prompt timers. Nothing else.
 - **No `bubbles/*` sub-components.** Manual rendering with plain text plus a few
   unicode characters; no styling library overhead.
-- **Read-only.** No event creation, no edit, no notifications, no themes, no
-  user-settings file. The only on-disk state is the OAuth client
-  credentials and refresh token, both written mode 0600 under
-  `~/Library/Application Support/gcal/`.
+- **Calendar read-only.** No event creation, no event edits, no themes, no
+  user-settings file. The on-disk state is the OAuth client credentials,
+  refresh token, and `focus.jsonl` focus journal, all under
+  `~/Library/Application Support/gcal/` with private file permissions.
 
 Idle target: <30MB RSS, ~0% CPU.
 
@@ -119,6 +124,8 @@ desktop apps; takes about ten minutes once).
 gcal              # launch the TUI
 gcal --login      # re-run the OAuth consent flow (e.g. after revoke)
 gcal --logout     # delete the local token (no-op if not logged in)
+gcal --no-focus   # launch without focus check-ins for this session
+gcal --focus-log  # print the local focus journal
 gcal --version    # print version and exit
 ```
 
@@ -129,6 +136,13 @@ Inside the TUI:
 | `q`      | quit                         |
 | `Ctrl+C` | quit                         |
 | `r`      | force-refresh today's events |
+| `1`-`5`  | answer the focus prompt      |
+| `s`      | skip the focus prompt        |
+
+Focus ratings are appended to
+`~/Library/Application Support/gcal/focus.jsonl` as JSON lines. A focus prompt
+fires only when the completed prior hour overlaps a timed calendar block whose
+title contains `work` (case-insensitive).
 
 Pin a narrow terminal (about 32 columns, 30+ rows) to the side of your screen
 and leave gcal running. It updates itself — block by block, day by day.
@@ -141,7 +155,11 @@ go vet ./...
 go build ./cmd/gcal
 ```
 
-Tests cover ~75 cases across pure helpers (schedule, render, timer math),
+For a fast manual focus-check loop, set `GCAL_FOCUS_INTERVAL=60s` before
+running `go run ./cmd/gcal`. The interval override still requires the
+completed hour to overlap a `work`-titled calendar block.
+
+Tests cover pure helpers (schedule, focus, render, timer math),
 file storage, translation, the Bubble Tea state machine, and the
 interactive credentials prompt (driven via `strings.Reader` against a
 pinned `t.TempDir`). The OAuth loopback flow and the actual Google API

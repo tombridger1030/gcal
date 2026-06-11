@@ -12,11 +12,14 @@ import (
 // viewState is the input to renderView. It is the smallest set of values
 // the renderer needs; the model assembles it on each tea View() call.
 type viewState struct {
-	schedule schedule.ScheduleState
-	width    int
-	height   int
-	stale    bool
-	revoked  bool
+	schedule       schedule.ScheduleState
+	width          int
+	height         int
+	stale          bool
+	revoked        bool
+	focusPrompting bool
+	focusHourStart time.Time
+	focusErr       bool
 }
 
 const (
@@ -113,6 +116,9 @@ func renderView(state viewState) string {
 		}
 		return centered(msg, max(state.width, 1), max(state.height, 1))
 	}
+	if state.focusPrompting {
+		return renderFocusPrompt(state.width, state.height, state.focusHourStart)
+	}
 
 	var b strings.Builder
 	header := formatHeader(state.schedule.Day)
@@ -128,6 +134,10 @@ func renderView(state viewState) string {
 	b.WriteString("\n")
 	b.WriteString(strings.Repeat("─", state.width))
 	b.WriteString("\n")
+	if state.focusErr {
+		b.WriteString(truncateToWidth("! focus log failed", state.width))
+		b.WriteString("\n")
+	}
 
 	if state.revoked {
 		b.WriteString("\n")
@@ -157,6 +167,38 @@ func renderView(state viewState) string {
 	return b.String()
 }
 
+// renderFocusPrompt renders the narrow in-TUI rating prompt.
+func renderFocusPrompt(width, height int, hourStart time.Time) string {
+	if width < 8 {
+		return centered("narrow", max(width, 1), max(height, 1))
+	}
+	hourEnd := hourStart.Add(time.Hour)
+	ruleWidth := min(width, 13)
+	lines := []string{
+		"How focused?",
+		fmt.Sprintf("last hour %s-%s", hourStart.Format("15:04"), hourEnd.Format("15:04")),
+		strings.Repeat("─", ruleWidth),
+		"1  distracted",
+		"3  mixed",
+		"5  deep focus",
+		"",
+		"1-5 log · s skip",
+	}
+
+	var b strings.Builder
+	for i, line := range lines {
+		if line == "" {
+			b.WriteString("\n")
+			continue
+		}
+		b.WriteString(centered(truncateToWidth(line, width), width, 1))
+		if i < len(lines)-1 {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
 func truncateToWidth(s string, width int) string {
 	if utf8.RuneCountInString(s) <= width {
 		return s
@@ -176,6 +218,13 @@ func centered(s string, width, _ int) string {
 	}
 	pad := (width - utf8.RuneCountInString(s)) / 2
 	return strings.Repeat(" ", pad) + s
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func max(a, b int) int {
